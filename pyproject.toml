@@ -5,64 +5,47 @@ description = "Demonstrates BSR metadata issue with uv exclude-newer"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "grpcio",                        # Works: PyPI packages have upload timestamps
-    "beta-googleapis-grpc-python",   # Fails: BSR packages have NO upload timestamps
+    "grpcio",                        # Works: PyPI — has upload-time in JSON API
+    "beta-googleapis-grpc-python",   # Fails: BSR — no JSON API, no upload-time
 ]
 
-# ─── ROOT CAUSE ───────────────────────────────────────────────────────────────
-#
-# BSR's Simple Repository API (https://buf.build/gen/python/simple/<pkg>/)
-# serves .whl links WITHOUT a `data-upload-time` attribute, for example:
-#
-#   <a href="...whl"
-#     data-requires-python=">=3.8"
-#     data-core-metadata="...whl.metadata"
-#   >...</a>
-#
-# PyPI's Simple API includes `data-upload-time="2024-01-15T12:00:00.000000Z"`.
-# uv's `exclude-newer` relies on this attribute to filter packages by publish date.
-# When it is absent, uv conservatively rejects every version of the package —
-# even if a far-future per-package cutoff is set via `exclude-newer-package`.
-#
-# ─── WHAT DOES NOT WORK ───────────────────────────────────────────────────────
-#
-# 1. `index-strategy = "unsafe-best-match"` — controls which index wins when a
-#    package appears on multiple indices. Has NO effect on the timestamp check.
-#
-# 2. `exclude-newer-package = { beta-googleapis-grpc-python = "2100-01-01" }` —
-#    uv still emits "missing an upload date, but user provided: 2100-01-01…"
-#    and rejects every BSR wheel. A per-package cutoff date does not bypass the
-#    missing-timestamp rejection; it only changes the date used in the message.
-#
-# ─── SCENARIO 1 (fails) ───────────────────────────────────────────────────────
-# Reproduce by commenting out the workaround block below and running `uv sync`.
-#
-# Expected output:
-#   warning: beta_googleapis_grpc_python-*.whl is missing an upload date,
-#            but user provided: <cutoff>     (repeated for every BSR wheel)
-#   × No solution found when resolving dependencies:
-#   ╰─▶ Because there are no versions of beta-googleapis-grpc-python …
-#       hint: Consider using `exclude-newer-package` to override the cutoff.
-#             (Note: this hint is misleading — it still fails, see above)
-#
-# ─── SCENARIO 2 (workaround — active below) ───────────────────────────────────
-# The only currently working mitigation is to remove `exclude-newer` entirely
-# for the affected project, or to split BSR packages into a separate project
-# that does not use `exclude-newer`.
-#
-# WARNING — security trade-off:
-# `exclude-newer` is a supply-chain guard: it prevents uv from installing a
-# package whose index entry was back-/future-dated to slip past a version pin.
-# Removing it globally disables that guard for ALL packages in the project,
-# including ones from PyPI where the protection is meaningful.
-# The right long-term fix is for Buf to add `data-upload-time` to BSR's
-# Simple API responses (PEP 700 / PEP 658 attribute).
-
+# ─── SCENARIO 1 — fails (active) ─────────────────────────────────────────────
+# Run `uv sync` to reproduce the error.
 [tool.uv]
-# WORKAROUND: remove exclude-newer so BSR packages (which lack timestamps) can
-# be resolved. Re-add it once BSR exposes upload-time metadata.
-# exclude-newer = "30d"   ← uncomment to reproduce the failure (scenario 1)
+exclude-newer = "30d"
 
 [[tool.uv.index]]
 url = "https://buf.build/gen/python"
 name = "buf-bsr"
+
+# ─── SCENARIO 2 — partial workaround ─────────────────────────────────────────
+# `exclude-newer-package = { pkg = false }` (uv >= 0.9.25) disables the check
+# for a named package, but does NOT propagate to its transitive deps.
+# BSR packages pull other BSR packages, so you must enumerate every transitive
+# dep manually — which is fragile and defeats the purpose of a package manager.
+#
+# Replace the [tool.uv] block above with:
+#
+# [tool.uv]
+# exclude-newer = "30d"
+# exclude-newer-package = { beta-googleapis-grpc-python = false, beta-googleapis-protocolbuffers-python = false, ... }
+#
+# ─── SCENARIO 3 — per-index workaround (uv >= 0.11.3, preview mode only) ─────
+# PR astral-sh/uv#18839 (merged 2026-04-08) adds per-index exclude-newer.
+# Replace the [[tool.uv.index]] block above with:
+#
+# [tool.uv]
+# exclude-newer = "30d"
+# preview = true
+#
+# [[tool.uv.index]]
+# url = "https://buf.build/gen/python"
+# name = "buf-bsr"
+# exclude-newer = false
+#
+# ─── ROOT CAUSE ───────────────────────────────────────────────────────────────
+# BSR only implements PEP 503 (HTML Simple API).
+# It ignores `Accept: application/vnd.pypi.simple.v1+json` and always returns HTML.
+# The `upload-time` field (PEP 691 + PEP 700) is only defined for the JSON API.
+# uv requests the JSON API to obtain upload timestamps for `exclude-newer`.
+# When BSR returns HTML, no timestamps are available, so every BSR wheel is rejected.
