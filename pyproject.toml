@@ -1,51 +1,17 @@
 [project]
 name = "test-bsr-metadata"
 version = "0.1.0"
-description = "Demonstrates BSR metadata issue with uv exclude-newer"
+description = "Reproduces BSR + uv exclude-newer incompatibility"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "grpcio",                        # Works: PyPI — has upload-time in JSON API
-    "beta-googleapis-grpc-python",   # Fails: BSR — no JSON API, no upload-time
+    "grpcio",                       # from PyPI — works fine, has upload-time
+    "beta-googleapis-grpc-python",  # from BSR — fails, no upload-time available
 ]
 
-# ─── SCENARIO 1 — fails (active) ─────────────────────────────────────────────
-# Run `uv sync` to reproduce the error.
 [tool.uv]
 exclude-newer = "30d"
 
 [[tool.uv.index]]
 url = "https://buf.build/gen/python"
 name = "buf-bsr"
-
-# ─── SCENARIO 2 — partial workaround ─────────────────────────────────────────
-# `exclude-newer-package = { pkg = false }` (uv >= 0.9.25) disables the check
-# for a named package, but does NOT propagate to its transitive deps.
-# BSR packages pull other BSR packages, so you must enumerate every transitive
-# dep manually — which is fragile and defeats the purpose of a package manager.
-#
-# Replace the [tool.uv] block above with:
-#
-# [tool.uv]
-# exclude-newer = "30d"
-# exclude-newer-package = { beta-googleapis-grpc-python = false, beta-googleapis-protocolbuffers-python = false, ... }
-#
-# ─── SCENARIO 3 — per-index workaround (uv >= 0.11.3, preview mode only) ─────
-# PR astral-sh/uv#18839 (merged 2026-04-08) adds per-index exclude-newer.
-# Replace the [[tool.uv.index]] block above with:
-#
-# [tool.uv]
-# exclude-newer = "30d"
-# preview = true
-#
-# [[tool.uv.index]]
-# url = "https://buf.build/gen/python"
-# name = "buf-bsr"
-# exclude-newer = false
-#
-# ─── ROOT CAUSE ───────────────────────────────────────────────────────────────
-# BSR only implements PEP 503 (HTML Simple API).
-# It ignores `Accept: application/vnd.pypi.simple.v1+json` and always returns HTML.
-# The `upload-time` field (PEP 691 + PEP 700) is only defined for the JSON API.
-# uv requests the JSON API to obtain upload timestamps for `exclude-newer`.
-# When BSR returns HTML, no timestamps are available, so every BSR wheel is rejected.
